@@ -1,0 +1,22 @@
+# ── 本地运行产物：含个人配置与明文密钥，务必不要提交 ──
+config.json
+balance_cache.json
+error.log
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.spec
+
+# ── 打包/大体积产物 ──
+DeskPulse.exe
+*.exe
+
+# ── 编辑器与系统 ──
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

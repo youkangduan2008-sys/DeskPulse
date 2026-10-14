@@ -1,0 +1,32 @@
+{
+  "city": "北京",
+  "profiles": [
+    {
+      "type": "deepseek",
+      "name": "DeepSeek",
+      "threshold": 5.0,
+      "api_key": "",
+      "id": "ds_example001"
+    },
+    {
+      "type": "volc",
+      "name": "火山方舟",
+      "threshold": 0.0,
+      "ak": "",
+      "sk": "",
+      "id": "volc_example001"
+    }
+  ],
+  "theme": "midnight",
+  "refresh_minutes": 10,
+  "opacity": 1.0,
+  "always_on_top": false,
+  "locked": false,
+  "ui_scale": 1.0,
+  "window_x": -1,
+  "window_y": -1,
+  "hotkey_settings": "ctrl+alt+s",
+  "hotkey_quit": "ctrl+alt+q",
+  "show_seconds": false,
+  "autostart": false
+}
