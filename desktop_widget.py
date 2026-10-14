@@ -37,7 +37,7 @@ import ctypes.wintypes
 import traceback
 import webbrowser
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
 try:
     import winreg
@@ -45,7 +45,7 @@ except Exception:
     winreg = None
 
 APP_NAME = "DeskPulse 桌面看板"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -1608,6 +1608,152 @@ class HotkeyManager:
 # ----------------------------------------------------------------------------
 # Canvas 缩放包装
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# 自绘扁平控件
+#   Tk 自带控件的系统外观（OptionMenu 的 3D 边框、默认复选框、带箭头滚动条、
+#   方块按钮）放在深色界面里很像二十年前的软件，这里统一换成自绘控件。
+# ----------------------------------------------------------------------------
+def rr_points(x1, y1, x2, y2, r):
+    """圆角矩形顶点（配合 smooth=True 使用）。"""
+    return [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+            x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+            x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+
+
+def setup_ttk_style():
+    """让 ttk 滚动条变成贴合深色主题的细条（默认样式带箭头，太旧）。"""
+    try:
+        st = ttk.Style()
+        st.theme_use("clam")
+        st.configure("Ds.Vertical.TScrollbar", gripcount=0,
+                     background="#3A4258", darkcolor="#2A3040",
+                     lightcolor="#2A3040", troughcolor="#1E2230",
+                     bordercolor="#1E2230", relief="flat", width=9)
+        st.map("Ds.Vertical.TScrollbar",
+               background=[("active", "#5B8DEF"), ("pressed", "#4A7DE0")])
+    except Exception:
+        pass
+
+
+def section_title(parent, title, subtitle="", bg="#1E2230"):
+    """区块标题 + 细分隔线（替代带 3D 边框的 LabelFrame）。"""
+    head = tk.Frame(parent, bg=bg)
+    head.pack(fill="x", padx=14, pady=(12, 4))
+    tk.Label(head, text=title, bg=bg, fg="#EDF0F6",
+             font=(UI_FONT, 10, "bold")).pack(side="left")
+    if subtitle:
+        tk.Label(head, text=subtitle, bg=bg, fg="#6B7488",
+                 font=(UI_FONT, 8)).pack(side="left", padx=(8, 0))
+    tk.Frame(parent, bg="#2A3040", height=1).pack(fill="x", padx=14, pady=(0, 8))
+    box = tk.Frame(parent, bg=bg)
+    box.pack(fill="x")
+    return box
+
+
+class FlatButton(tk.Canvas):
+    """圆角扁平按钮（替代 tk.Button，去掉直角与系统边框）。"""
+
+    KINDS = {
+        "primary": ("#5B8DEF", "#6E9BF2", "#FFFFFF"),
+        "secondary": ("#2A3040", "#3A4258", "#EDF0F6"),
+        "accent": ("#2E4A63", "#3A5C7C", "#BFE0FF"),
+        "danger": ("#5A2E36", "#6E3A44", "#FFB3B3"),
+        "warn": ("#5A3A1E", "#6E4A28", "#FFC98A"),
+        "ghost": ("#1E2230", "#2A3040", "#9AA3B8"),
+    }
+
+    def __init__(self, parent, text, command=None, kind="secondary",
+                 width=96, height=30, radius=8, size=9, bg=None):
+        parent_bg = bg or parent.cget("bg")
+        super().__init__(parent, width=width, height=height, bg=parent_bg,
+                         highlightthickness=0, bd=0, cursor="hand2")
+        self._base, self._hover, self._fg = self.KINDS.get(
+            kind, self.KINDS["secondary"])
+        self._cmd = command
+        self._shape = self.create_polygon(
+            rr_points(1, 1, width - 1, height - 1, radius),
+            smooth=True, splinesteps=20, fill=self._base, outline="")
+        self.create_text(width // 2, height // 2, text=text, fill=self._fg,
+                         font=(UI_FONT, size))
+        self.bind("<Enter>", lambda e: self.itemconfig(self._shape, fill=self._hover))
+        self.bind("<Leave>", lambda e: self.itemconfig(self._shape, fill=self._base))
+        self.bind("<Button-1>", lambda e: self._cmd() if self._cmd else None)
+
+
+class PillSwitch(tk.Canvas):
+    """胶囊开关，替代 tk.Checkbutton（绑定一个 IntVar）。"""
+
+    def __init__(self, parent, text, variable, width=430, height=26,
+                 bg="#1E2230", fg="#9AA3B8", on="#5B8DEF", off="#3A4258"):
+        super().__init__(parent, width=width, height=height, bg=bg,
+                         highlightthickness=0, bd=0, cursor="hand2")
+        self.var = variable
+        self._on, self._off = on, off
+        self._tw, self._th, self._h = 34, 18, height
+        y0 = (height - self._th) // 2
+        self._track = self.create_polygon(
+            rr_points(2, y0, 2 + self._tw, y0 + self._th, self._th / 2),
+            smooth=True, splinesteps=20, fill=off, outline="")
+        self._knob = self.create_oval(0, 0, 0, 0, fill="#FFFFFF", outline="")
+        self.create_text(self._tw + 12, height // 2, text=text, anchor="w",
+                         fill=fg, font=(UI_FONT, 9))
+        self.bind("<Button-1>", self._toggle)
+        self._sync()
+
+    def _sync(self):
+        on = bool(int(self.var.get() or 0))
+        d = self._th - 4
+        y0 = (self._h - self._th) // 2
+        x = (self._tw - d) if on else 4
+        self.coords(self._knob, x, y0 + 2, x + d, y0 + 2 + d)
+        self.itemconfig(self._track, fill=self._on if on else self._off)
+
+    def _toggle(self, _e=None):
+        self.var.set(0 if int(self.var.get() or 0) else 1)
+        self._sync()
+
+
+class FlatSelect(tk.Frame):
+    """扁平下拉，替代 tk.OptionMenu。"""
+
+    def __init__(self, parent, variable, choices, labels=None, width=210,
+                 height=28, bg="#1E2230"):
+        super().__init__(parent, bg=bg)
+        self.var = variable
+        self.choices = list(choices)
+        self.labels = list(labels) if labels else list(choices)
+        self.cv = tk.Canvas(self, width=width, height=height, bg=bg,
+                            highlightthickness=0, bd=0, cursor="hand2")
+        self.cv.pack()
+        self.cv.create_polygon(rr_points(1, 1, width - 1, height - 1, 8),
+                               smooth=True, splinesteps=20, fill="#2A3040",
+                               outline="#3A4258", width=1)
+        self._text = self.cv.create_text(12, height // 2, text="", anchor="w",
+                                         fill="#EDF0F6", font=(UI_FONT, 9))
+        self.cv.create_text(width - 12, height // 2, text="\u25be", anchor="e",
+                            fill="#9AA3B8", font=(UI_FONT, 9))
+        self.cv.bind("<Button-1>", self._popup)
+        try:
+            self.var.trace_add("write", lambda *a: self._sync())
+        except Exception:
+            pass
+        self._sync()
+
+    def _sync(self):
+        val = self.var.get()
+        text = self.labels[self.choices.index(val)] if val in self.choices else str(val)
+        self.cv.itemconfig(self._text, text=text)
+
+    def _popup(self, _e=None):
+        m = tk.Menu(self, tearoff=0, bg="#2A3040", fg="#EDF0F6",
+                    activebackground="#5B8DEF", activeforeground="#FFFFFF",
+                    font=(UI_FONT, 9), bd=0)
+        for c, lb in zip(self.choices, self.labels):
+            m.add_command(label=lb, command=lambda c=c: self.var.set(c))
+        m.tk_popup(self.cv.winfo_rootx(),
+                   self.cv.winfo_rooty() + self.cv.winfo_height())
+
+
 class CV:
     def __init__(self, canvas, scale):
         self.c = canvas
@@ -1841,14 +1987,10 @@ class AccountDialog(tk.Toplevel):
 
         btns = tk.Frame(self, bg=BG)
         btns.grid(row=row[0], column=0, columnspan=2, pady=14)
-        tk.Button(btns, text="保存并立即刷新", width=14, command=self._save,
-                  bg="#5B8DEF", fg="white", relief="flat", font=(UI_FONT, 10),
-                  activebackground="#4A7DE0", activeforeground="white",
-                  cursor="hand2").pack(side="left", padx=6)
-        tk.Button(btns, text="取消", width=8, command=self.destroy,
-                  bg="#3A4258", fg=FG, relief="flat", font=(UI_FONT, 10),
-                  activebackground="#48516A", activeforeground=FG,
-                  cursor="hand2").pack(side="left", padx=6)
+        FlatButton(btns, "保存并立即刷新", self._save, kind="primary",
+                   width=140, height=33, size=10, bg=BG).pack(side="left", padx=6)
+        FlatButton(btns, "取消", self.destroy, kind="secondary", width=90,
+                   height=33, size=10, bg=BG).pack(side="left", padx=6)
         self.update_idletasks()
         _px, _py = parent.winfo_rootx() + 30, parent.winfo_rooty() + 50
         clamp_window_pos(self, _px, _py)
@@ -1929,6 +2071,7 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, cfg, on_save, on_profiles=None):
         super().__init__(parent)
         self.title(f"DeskPulse 设置 · v{APP_VERSION}")
+        setup_ttk_style()
         self.cfg = cfg
         self.on_save = on_save
         self.on_profiles = on_profiles  # 账户增删改即时生效回调
@@ -1966,13 +2109,9 @@ class SettingsDialog(tk.Toplevel):
                  width=18, anchor="w").pack(side="left")
         self.scale_var = tk.StringVar(
             value=f"{int(round(float(cfg.get('ui_scale', 1.0)) * 100))}%")
-        om = tk.OptionMenu(opt, self.scale_var,
-                           "85%", "100%", "110%", "125%", "140%", "160%")
-        om.config(bg="#2A3040", fg=FG, relief="flat", width=17,
-                  activebackground="#3A4258", activeforeground=FG,
-                  highlightthickness=1, highlightbackground="#3A4258")
-        om["menu"].config(bg="#2A3040", fg=FG, activebackground="#5B8DEF")
-        om.pack(side="left")
+        FlatSelect(opt, self.scale_var,
+                   ["85%", "100%", "110%", "125%", "140%", "160%"],
+                   width=150, bg=BG).pack(side="left")
 
         opt2 = tk.Frame(basic, bg=BG)
         opt2.pack(fill="x", pady=3)
@@ -1980,13 +2119,9 @@ class SettingsDialog(tk.Toplevel):
                  width=18, anchor="w").pack(side="left")
         self.theme_var = tk.StringVar(
             value=THEMES.get(cfg.get("theme"), THEMES["midnight"])["name"])
-        om2 = tk.OptionMenu(opt2, self.theme_var,
-                            *[v["name"] for v in THEMES.values()])
-        om2.config(bg="#2A3040", fg=FG, relief="flat", width=17,
-                   activebackground="#3A4258", activeforeground=FG,
-                   highlightthickness=1, highlightbackground="#3A4258")
-        om2["menu"].config(bg="#2A3040", fg=FG, activebackground="#5B8DEF")
-        om2.pack(side="left")
+        FlatSelect(opt2, self.theme_var,
+                   [v["name"] for v in THEMES.values()],
+                   width=150, bg=BG).pack(side="left")
 
         checks = tk.Frame(self, bg=BG)
         checks.pack(fill="x", padx=14)
@@ -1999,15 +2134,11 @@ class SettingsDialog(tk.Toplevel):
                           ("锁定界面（防误触，锁定后仅可解锁/退出）", self.lock_var),
                           ("时钟显示秒数", self.sec_var),
                           ("开机自动启动", self.start_var)):
-            tk.Checkbutton(checks, text=text, variable=var, bg=BG, fg=F2,
-                           selectcolor="#2A3040", activebackground=BG,
-                           activeforeground=FG, font=(UI_FONT, 9),
-                           borderwidth=0, anchor="w").pack(fill="x", pady=2)
+            PillSwitch(checks, text, var, width=430, bg=BG,
+                       fg=F2).pack(fill="x", pady=1)
 
-        hkf = tk.LabelFrame(self, text="全局快捷键（任意界面下生效，清除即禁用）",
-                            bg=BG, fg=FG, font=(UI_FONT, 10, "bold"), bd=1,
-                            highlightthickness=0, labelanchor="nw")
-        hkf.pack(fill="x", padx=14, pady=(2, 6))
+        hkf = section_title(self, "全局快捷键", "任意界面下生效，清除即禁用",
+                            bg=BG)
         self.hk_vars = {}
         for key, label in (("hotkey_settings", "打开设置"),
                            ("hotkey_quit", "关闭退出")):
@@ -2023,22 +2154,19 @@ class SettingsDialog(tk.Toplevel):
             e.pack(side="left", ipady=2)
             e.bind("<KeyPress>",
                    lambda ev, v=sv: self._capture_hotkey(ev, v))
-            tk.Button(f, text="清除", width=5,
-                      command=lambda v=sv: v.set(""),
-                      bg="#3A4258", fg=FG, relief="flat", font=(UI_FONT, 8),
-                      cursor="hand2").pack(side="left", padx=6)
+            FlatButton(f, "清除", lambda v=sv: v.set(""), width=54,
+                       height=24, size=8, bg=BG).pack(side="left", padx=6)
             self.hk_vars[key] = sv
 
-        acct = tk.LabelFrame(self, text="监控账户（余额 / 用量 / 充值）", bg=BG,
-                             fg=FG, font=(UI_FONT, 10, "bold"), bd=1,
-                             highlightthickness=0, labelanchor="nw")
-        acct.pack(fill="x", padx=14, pady=8)
+        acct = section_title(self, "监控账户", "余额 / 用量 / 充值", bg=BG)
         addrow = tk.Frame(acct, bg=BG)
         addrow.pack(side="bottom", fill="x", padx=8, pady=(0, 6))
         acct_canvas = tk.Canvas(acct, bg=BG, highlightthickness=0,
                                 height=232, bd=0)
-        self.acct_sb = tk.Scrollbar(acct, orient="vertical",
-                                    command=acct_canvas.yview, width=10)
+        self.acct_canvas = acct_canvas
+        self.acct_sb = ttk.Scrollbar(acct, orient="vertical",
+                                     command=acct_canvas.yview,
+                                     style="Ds.Vertical.TScrollbar")
         acct_sb = self.acct_sb
         self.acct_box = tk.Frame(acct_canvas, bg=BG)
         self.acct_win = acct_canvas.create_window(
@@ -2064,20 +2192,19 @@ class SettingsDialog(tk.Toplevel):
         self._rebuild_acct_rows()
         # 平台按钮按 4 列换行排布：平台变多以后挤一行会被窗口裁掉
         for i, ptype in enumerate(PLATFORMS):
-            tk.Button(addrow, text=f"+ {platform_label(ptype)}", width=13,
-                      command=lambda t=ptype: AccountDialog(
-                          self, t, self._add_profile,
-                          default_name=self._suggest_name(t)),
-                      bg="#32394F", fg=FG, relief="flat", font=(UI_FONT, 8),
-                      activebackground="#3D4663", cursor="hand2").grid(
-                row=i // 4, column=i % 4, padx=2, pady=1, sticky="w")
+            FlatButton(addrow, f"+ {platform_label(ptype)}",
+                       lambda t=ptype: AccountDialog(
+                           self, t, self._add_profile,
+                           default_name=self._suggest_name(t)),
+                       kind="secondary", width=112, height=27, size=8,
+                       bg=BG).grid(row=i // 4, column=i % 4, padx=3, pady=2,
+                                   sticky="w")
 
         env_row = len(PLATFORMS) // 4 + 1
-        tk.Button(addrow, text="⤓ 从环境变量导入", width=13,
-                  command=self._import_env, bg="#2E4A63", fg="#BFE0FF",
-                  relief="flat", font=(UI_FONT, 8),
-                  activebackground="#3A5C7C", cursor="hand2").grid(
-            row=env_row, column=0, padx=2, pady=(4, 1), sticky="w")
+        FlatButton(addrow, "⤓ 从环境变量导入", self._import_env,
+                   kind="accent", width=112, height=27, size=8,
+                   bg=BG).grid(row=env_row, column=0, padx=3, pady=(6, 2),
+                               sticky="w")
         self._env_status = tk.Label(addrow, text="", bg=BG, fg="#6B7488",
                                     font=(UI_FONT, 8), anchor="w")
         self._env_status.grid(row=env_row + 1, column=0, columnspan=4,
@@ -2085,14 +2212,10 @@ class SettingsDialog(tk.Toplevel):
 
         btns = tk.Frame(self, bg=BG)
         btns.pack(pady=10)
-        tk.Button(btns, text="保存", width=10, command=self._save,
-                  bg="#5B8DEF", fg="white", relief="flat", font=(UI_FONT, 10),
-                  activebackground="#4A7DE0", activeforeground="white",
-                  cursor="hand2").pack(side="left", padx=6)
-        tk.Button(btns, text="取消", width=10, command=self.destroy,
-                  bg="#3A4258", fg=FG, relief="flat", font=(UI_FONT, 10),
-                  activebackground="#48516A", activeforeground=FG,
-                  cursor="hand2").pack(side="left", padx=6)
+        FlatButton(btns, "保存", self._save, kind="primary", width=110,
+                   height=33, size=10, bg=BG).pack(side="left", padx=6)
+        FlatButton(btns, "取消", self.destroy, kind="secondary", width=110,
+                   height=33, size=10, bg=BG).pack(side="left", padx=6)
         self.update_idletasks()
         _px = parent.winfo_rootx() + 30
         _py = max(20, parent.winfo_rooty() - 40)
@@ -2153,24 +2276,33 @@ class SettingsDialog(tk.Toplevel):
             p.setdefault("id", pid)
             self.threshold_vars[pid] = sv
             topup = PLATFORMS.get(p.get("type"), {}).get("topup_url", DS_TOPUP_URL)
-            for text, cmd, bgc, fgc in (
-                    ("充值", lambda u=topup: open_url_async(u), "#5A3A1E", "#FFC98A"),
+            for text, cmd, kind in (
+                    ("充值", lambda u=topup: open_url_async(u), "warn"),
                     ("编辑", lambda pp=p: AccountDialog(
                         self, pp["type"],
                         lambda np: self._update_profile(pp, np), initial=pp),
-                     "#32394F", "#EDF0F6"),
-                    ("删除", lambda pp=p: self._del_profile(pp),
-                     "#5A2E36", "#FFB3B3")):
-                tk.Button(f, text=text, width=4, command=cmd, bg=bgc, fg=fgc,
-                          relief="flat", font=(UI_FONT, 8),
-                          cursor="hand2").pack(side="left", padx=2)
+                     "secondary"),
+                    ("删除", lambda pp=p: self._del_profile(pp), "danger")):
+                FlatButton(f, text, cmd, kind=kind, width=52, height=24,
+                           size=8, bg="#1E2230").pack(side="left", padx=2)
         self.acct_box.update_idletasks()
         if hasattr(self, "acct_sb"):
-            if self.acct_box.winfo_reqheight() <= 236:
+            need = self.acct_box.winfo_reqheight()
+            if need <= 236:
                 self.acct_sb.pack_forget()
-            elif not self.acct_sb.winfo_ismapped():
-                self.acct_sb.pack(side="right", fill="y",
-                                  pady=(4, 2), padx=(0, 4))
+                # 账户少的时候把画布收短，避免下面留一大块空白
+                try:
+                    self.acct_canvas.configure(height=max(40, need + 6))
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.acct_canvas.configure(height=232)
+                except Exception:
+                    pass
+                if not self.acct_sb.winfo_ismapped():
+                    self.acct_sb.pack(side="right", fill="y",
+                                      pady=(4, 2), padx=(0, 4))
 
     def _notify_profiles(self):
         if self.on_profiles:
