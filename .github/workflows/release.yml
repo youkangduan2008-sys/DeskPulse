@@ -1,0 +1,76 @@
+name: 自动发版
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "手动试跑备注（不会发 Release，只产出构建结果）"
+        required: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 语法检查
+        run: python -m compileall -q desktop_widget.py
+
+      - name: 校验源码版本号与 tag 一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $src = (Select-String -Path desktop_widget.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          Write-Host "源码版本: $src / tag: $tag"
+          if ($src -ne $tag) { throw "版本号与 tag 不一致：源码 $src，tag $tag。请先改 APP_VERSION 再打 tag。" }
+
+      - name: 安装 PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: 编译单文件 exe
+        run: python -m PyInstaller --noconsole --onefile --icon app.ico --name DeskPulse desktop_widget.py
+
+      - name: 冒烟测试（启动 8 秒不崩）
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\DeskPulse.exe" -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "exe 启动后立即退出，退出码 $($p.ExitCode)" }
+          Get-Process -Name DeskPulse -ErrorAction SilentlyContinue | Stop-Process -Force
+          Write-Host "冒烟测试通过"
+
+      - name: 计算 SHA256
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash -Path dist\DeskPulse.exe -Algorithm SHA256).Hash
+          "DeskPulse.exe  SHA256: $h" | Out-File -Encoding utf8 dist\DeskPulse.exe.sha256.txt
+          Get-Content dist\DeskPulse.exe.sha256.txt
+
+      - name: 保存构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeskPulse-exe
+          path: |
+            dist/DeskPulse.exe
+            dist/DeskPulse.exe.sha256.txt
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/DeskPulse.exe
+            dist/DeskPulse.exe.sha256.txt
+          generate_release_notes: true
