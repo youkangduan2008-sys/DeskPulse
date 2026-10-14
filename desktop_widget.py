@@ -44,7 +44,7 @@ except Exception:
     winreg = None
 
 APP_NAME = "DeskPulse 桌面看板"
-APP_VERSION = "2.0.5"
+APP_VERSION = "2.1.0"
 
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -69,6 +69,8 @@ DEFAULT_CONFIG = {
     "hotkey_quit": "ctrl+alt+q",
     "show_seconds": False,
     "autostart": False,
+    "check_update": True,
+    "notify_low_balance": True,
 }
 
 
@@ -147,6 +149,7 @@ THEMES = {
         "accent": "#5B8DEF", "card_alt": "#1B1F2C", "hover": "#2C3346",
         "ds": "#7B93FF", "volc": "#FF8A3D",
         "sf": "#9B8CFF", "ms": "#5B7CFF", "zp": "#4FA3E3", "wb": "#3ECF8E",
+        "or": "#F472B6",
         "ok": "#3ECF8E", "warn": "#FFC93C", "err": "#FF6B6B", "errbg": "#3A2530",
         "sun": "#FFC93C", "cloud": "#C7D0E2", "rain": "#6EC1E4", "snow": "#E8F1FF",
     },
@@ -156,6 +159,7 @@ THEMES = {
         "accent": "#6FC48E", "card_alt": "#152A1F", "hover": "#1E3A2B",
         "ds": "#7FB8FF", "volc": "#FF9A55",
         "sf": "#9B8CFF", "ms": "#6F8FFF", "zp": "#5AB3E0", "wb": "#3ECF8E",
+        "or": "#F472B6",
         "ok": "#55D68A", "warn": "#E8C15A", "err": "#FF7A72", "errbg": "#37262A",
         "sun": "#F2C94C", "cloud": "#AFC9B8", "rain": "#6FC9E0", "snow": "#E2F0EC",
     },
@@ -165,6 +169,7 @@ THEMES = {
         "accent": "#D2A36C", "card_alt": "#2A221B", "hover": "#3A2F24",
         "ds": "#93A8FF", "volc": "#FF9455",
         "sf": "#A390FF", "ms": "#7B93FF", "zp": "#5AB3E0", "wb": "#3ECF8E",
+        "or": "#F472B6",
         "ok": "#7BC489", "warn": "#E8BE65", "err": "#FF7D6E", "errbg": "#40282A",
         "sun": "#F2C14E", "cloud": "#CDBFAF", "rain": "#7FBFD0", "snow": "#EDE4D8",
     },
@@ -174,6 +179,7 @@ THEMES = {
         "accent": "#3F8F62", "card_alt": "#CFE0D2", "hover": "#C2D8C6",
         "ds": "#3D5BD9", "volc": "#C25E17",
         "sf": "#6A4FE0", "ms": "#2F54D1", "zp": "#2E6BE0", "wb": "#1F9E57",
+        "or": "#C2185B",
         "ok": "#2F9E63", "warn": "#B98514", "err": "#D24A4A", "errbg": "#F2D8D8",
         "sun": "#E8A200", "cloud": "#8FA896", "rain": "#3E8FC4", "snow": "#5A7888",
     },
@@ -183,6 +189,7 @@ THEMES = {
         "accent": "#A9782F", "card_alt": "#ECE1C8", "hover": "#E2D3B4",
         "ds": "#3D5BD9", "volc": "#C25E17",
         "sf": "#6A4FE0", "ms": "#2F54D1", "zp": "#2E6BE0", "wb": "#1F9E57",
+        "or": "#C2185B",
         "ok": "#3E9460", "warn": "#B07F16", "err": "#CE4B4B", "errbg": "#F0DACE",
         "sun": "#E8A200", "cloud": "#A39880", "rain": "#4E8FB8", "snow": "#6E8494",
     },
@@ -192,6 +199,7 @@ THEMES = {
         "accent": "#3F74C8", "card_alt": "#D7E1EC", "hover": "#C8D6E6",
         "ds": "#3D5BD9", "volc": "#C25E17",
         "sf": "#6A4FE0", "ms": "#2F54D1", "zp": "#2E6BE0", "wb": "#1F9E57",
+        "or": "#C2185B",
         "ok": "#2F9E63", "warn": "#B08218", "err": "#D24A4A", "errbg": "#F0D9DE",
         "sun": "#E8A200", "cloud": "#8FA0B8", "rain": "#3E8FC4", "snow": "#5A708C",
     },
@@ -820,6 +828,138 @@ def fetch_zhipu(api_key):
         "kind": "quota"}
 
 
+UPDATE_REPO = "youkangduan2008-sys/DeskPulse"
+
+
+def version_tuple(s):
+    """把 "2.1.0" / "v2.1" 变成可比较的元组；解析不出来返回 ()。"""
+    parts = []
+    for chunk in str(s or "").strip().lstrip("vV").split("."):
+        digits = "".join(c for c in chunk if c.isdigit())
+        if not digits:
+            return ()
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def fetch_latest_release():
+    """查 GitHub 上最新 Release 的版本号与页面地址。"""
+    data = http_json(
+        f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+        headers={"Accept": "application/vnd.github+json",
+                 "User-Agent": "DeskPulse-UpdateCheck"})
+    tag = str(data.get("tag_name") or "").strip().lstrip("vV")
+    url = str(data.get("html_url")
+              or f"https://github.com/{UPDATE_REPO}/releases")
+    if not version_tuple(tag):
+        raise RuntimeError("返回里没有可用的版本号")
+    return tag, url
+
+
+def fetch_openrouter(api_key):
+    """OpenRouter：credits 给出累计充值与累计消耗，相减即剩余额度（美元）。"""
+    problem = _secret_problem(api_key, "API Key")
+    if problem:
+        raise RuntimeError(problem)
+    data = http_json(
+        "https://openrouter.ai/api/v1/credits",
+        headers={"Authorization": f"Bearer {api_key}",
+                 "Accept": "application/json"})
+    d = data.get("data") or {}
+    if "total_credits" not in d:
+        raise RuntimeError(f"返回异常: {json.dumps(data, ensure_ascii=False)[:120]}")
+    total = float(d.get("total_credits") or 0)
+    used = float(d.get("total_usage") or 0)
+    return {"available": True, "currency": "USD",
+            "total": f"{total - used:.2f}",
+            "sub": f"累计充值 ${total:.2f} · 已用 ${used:.2f}"}
+
+
+# ---- Windows 系统通知（托盘气泡，不依赖第三方库） ----
+NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
+NIF_ICON, NIF_TIP, NIF_INFO = 0x02, 0x04, 0x10
+NIIF_INFO = 0x01
+IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x0010, 0x0040
+IDI_APPLICATION = 32512
+
+
+class NOTIFYICONDATAW(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.wintypes.DWORD),
+                ("hWnd", ctypes.wintypes.HWND),
+                ("uID", ctypes.wintypes.UINT),
+                ("uFlags", ctypes.wintypes.UINT),
+                ("uCallbackMessage", ctypes.wintypes.UINT),
+                ("hIcon", ctypes.wintypes.HICON),
+                ("szTip", ctypes.c_wchar * 128),
+                ("dwState", ctypes.wintypes.DWORD),
+                ("dwStateMask", ctypes.wintypes.DWORD),
+                ("szInfo", ctypes.c_wchar * 256),
+                ("uTimeout", ctypes.wintypes.UINT),
+                ("szInfoTitle", ctypes.c_wchar * 64),
+                ("dwInfoFlags", ctypes.wintypes.DWORD)]
+
+
+class Balloon:
+    """在托盘挂一个图标，用它弹系统通知；退出前需要 close() 否则图标会残留。"""
+
+    UID = 0xD35C
+
+    def __init__(self):
+        self.hwnd = None
+        self.hicon = None
+        self.active = False
+
+    def attach(self, hwnd):
+        self.hwnd = hwnd
+        path = os.path.join(BASE_DIR, "app.ico")
+        for args in ((path, LR_LOADFROMFILE), ):
+            try:
+                self.hicon = ctypes.windll.user32.LoadImageW(
+                    None, args[0], IMAGE_ICON, 0, 0, args[1] | LR_DEFAULTSIZE)
+            except Exception:
+                self.hicon = None
+            if self.hicon:
+                break
+        if not self.hicon:
+            self.hicon = ctypes.windll.user32.LoadImageW(
+                None, ctypes.c_wchar_p(IDI_APPLICATION), IMAGE_ICON, 0, 0, 0)
+        nid = self._nid()
+        nid.uFlags = NIF_ICON | NIF_TIP
+        nid.szTip = "DeskPulse 桌面看板"
+        self.active = bool(ctypes.windll.shell32.Shell_NotifyIconW(NIM_ADD,
+                                                                   ctypes.byref(nid)))
+
+    def _nid(self):
+        nid = NOTIFYICONDATAW()
+        nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+        nid.hWnd = self.hwnd
+        nid.uID = self.UID
+        nid.hIcon = self.hicon
+        return nid
+
+    def notify(self, title, text):
+        if not self.active:
+            return False
+        nid = self._nid()
+        nid.uFlags = NIF_INFO
+        nid.szInfoTitle = title[:63]
+        nid.szInfo = text[:255]
+        nid.dwInfoFlags = NIIF_INFO
+        nid.uTimeout = 10000
+        return bool(ctypes.windll.shell32.Shell_NotifyIconW(NIM_MODIFY,
+                                                            ctypes.byref(nid)))
+
+    def close(self):
+        if not self.active:
+            return
+        try:
+            ctypes.windll.shell32.Shell_NotifyIconW(NIM_DELETE,
+                                                    ctypes.byref(self._nid()))
+        except Exception:
+            pass
+        self.active = False
+
+
 WB_INFO_PATHS = [
     os.path.join(os.environ.get("LOCALAPPDATA", ""),
                  "CodeBuddyExtension", "Data", "Public", "auth",
@@ -901,6 +1041,13 @@ PLATFORMS = {
         "keys_url": ZP_KEYS_URL, "topup_url": ZP_TOPUP_URL,
         "hint": "获取 Key：bigmodel.cn → API Keys（显示配额用量）",
         "fetch": fetch_zhipu},
+    "openrouter": {
+        "label": "OpenRouter", "brand": "or", "id_prefix": "or",
+        "fields": [("api_key", "API Key", True)],
+        "keys_url": "https://openrouter.ai/settings/keys",
+        "topup_url": "https://openrouter.ai/credits",
+        "hint": "获取 Key：openrouter.ai/settings/keys",
+        "fetch": fetch_openrouter},
     "workbuddy": {
         "label": "WorkBuddy积分", "brand": "wb", "id_prefix": "wb",
         "fields": [],
@@ -1037,6 +1184,7 @@ class RefreshThread(threading.Thread):
         self.evt_platforms = threading.Event()
         self.stop_event = threading.Event()
         self.weather_due = 0.0
+        self.update_due = time.time() + 15
         self.platforms_due = 0.0
 
     def refresh_weather(self):
@@ -1056,6 +1204,15 @@ class RefreshThread(threading.Thread):
                     self.evt_weather.clear()
                     self._do_weather()
                     self.weather_due = time.time() + 30 * 60
+                if now >= self.update_due:
+                    self.update_due = time.time() + 12 * 3600
+                    if self.cfg_getter().get("check_update", True):
+                        try:
+                            tag, url = fetch_latest_release()
+                            self.q.put(("update", tag, url))
+                        except Exception:
+                            # 离线 / 限流 / 被墙都静默跳过，不打扰用户
+                            pass
                 if self.evt_platforms.is_set() or now >= self.platforms_due:
                     self.evt_platforms.clear()
                     self._do_platforms()
@@ -1678,14 +1835,15 @@ class SettingsDialog(tk.Toplevel):
         acct_sb.pack(side="right", fill="y", pady=(4, 2), padx=(0, 4))
         self.threshold_vars = {}
         self._rebuild_acct_rows()
-        for ptype in PLATFORMS:
-            tk.Button(addrow, text=f"+ {platform_label(ptype)}", width=11,
+        # 平台按钮按 4 列换行排布：平台变多以后挤一行会被窗口裁掉
+        for i, ptype in enumerate(PLATFORMS):
+            tk.Button(addrow, text=f"+ {platform_label(ptype)}", width=13,
                       command=lambda t=ptype: AccountDialog(
                           self, t, self._add_profile,
                           default_name=self._suggest_name(t)),
                       bg="#32394F", fg=FG, relief="flat", font=(UI_FONT, 8),
-                      activebackground="#3D4663", cursor="hand2").pack(
-                side="left", padx=2, pady=1)
+                      activebackground="#3D4663", cursor="hand2").grid(
+                row=i // 4, column=i % 4, padx=2, pady=1, sticky="w")
 
         btns = tk.Frame(self, bg=BG)
         btns.pack(pady=10)
@@ -1847,14 +2005,15 @@ WEATHER_BOTTOM = 152
 CLOCK_TOP = 56
 CLOCK_BOTTOM = 152
 BOTTOM_PAD = 14
-ACC_H_SM, VOLC_H, ACC_GAP = 62, 78, 12
+ACC_H_SM, VOLC_H, ACC_GAP = 62, 90, 12
 ACC_PAD = 14
 EMPTY_H = 44
 SCREEN_MARGIN = 16
 
 
 def acc_block_height(p):
-    # 所有平台账户卡统一高度（三行结构），视觉对齐
+    # 所有平台账户卡统一高度（四行结构：名称/余额行 + 明细行 + 预警行 + 趋势曲线），
+    # 比 2.0.x 高 12px，专门留给底部那条余额迷你曲线
     return VOLC_H
 
 
@@ -1901,6 +2060,11 @@ class Widget:
         self.weather_icon_items = []
         self._weather_icon_key = None
         self.hover_btn = None
+        self.update_info = None      # (新版本号, 下载页) —— 有更新时状态行提示
+        self._warn_flags = {}        # pid -> 当前是否处于预警
+        self._low_seen = {}          # pid -> 上一次已提醒过的状态
+        self._manual_check = False
+        self._balloon = None
         self._dirty = True          # 仅在数据变化时重绘界面（降低 CPU）
         self._cursor = ""
         self._press = None
@@ -2126,7 +2290,8 @@ class Widget:
                         tags=("acc",))
         chg = cv.text(W - 30, y0 + 35, "", size=8.5, color=t["text3"],
                       anchor="ne", tags=("acc",))
-        items = {"dot": dot, "bal": bal, "line1": line1, "chg": chg}
+        items = {"dot": dot, "bal": bal, "line1": line1, "chg": chg,
+                 "y0": y0}
         if h == VOLC_H:
             items["line2"] = cv.text(38, y0 + 52, "", size=8.5,
                                      color=t["text3"], tags=("acc",))
@@ -2139,6 +2304,106 @@ class Widget:
             return "滚轮翻页"
         return "右键菜单"
 
+    def _foot_text(self):
+        """状态行右侧小字：有新版时优先提示升级，否则显示操作提示。"""
+        if self.update_info:
+            return f"有新版本 v{self.update_info[0]} · 点此下载"
+        return self._hint_text()
+
+    def _foot_color(self):
+        return self.t["accent"] if self.update_info else self.t["text3"]
+
+    def _on_foot_click(self, _event=None):
+        if self.update_info and self.update_info[1]:
+            webbrowser.open(self.update_info[1])
+
+    def _flash_foot(self, text, ms=4000):
+        """在状态行短暂显示一条提示，然后恢复。"""
+        self.c.itemconfig("foot_hint", text=text, fill=self.t["ok"])
+        self.root.after(ms, lambda: self.c.itemconfig(
+            "foot_hint", text=self._foot_text(), fill=self._foot_color()))
+
+    def _manual_update_check(self):
+        self._manual_check = True
+        self.c.itemconfig("foot_hint", text="正在检查更新…",
+                          fill=self.t["text3"])
+        threading.Thread(target=self._do_update_check, daemon=True).start()
+
+    def _do_update_check(self):
+        try:
+            tag, url = fetch_latest_release()
+        except Exception:
+            tag, url = None, None
+        self.q.put(("update", tag, url))
+
+    # ---------------- 余额历史 / 系统通知 ----------------
+    def _push_history(self, pid, value):
+        """按时间记录余额（最多 200 点；5 分钟内只覆盖最后一个点）。"""
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return
+        ent = self.bal_cache.setdefault(pid, {})
+        hist = ent.get("hist")
+        if not isinstance(hist, list):
+            hist = []
+        now = time.time()
+        if hist and now - float(hist[-1][0]) < 300:
+            hist[-1] = [round(now, 1), round(v, 4)]
+        else:
+            hist.append([round(now, 1), round(v, 4)])
+        ent["hist"] = hist[-200:]
+
+    def _draw_spark(self, pid, items, brand):
+        """卡片底部一条余额迷你曲线；点数少于 3 个时不画。"""
+        self.c.delete(f"spark_{pid}")
+        y0 = items.get("y0")
+        hist = (self.bal_cache.get(pid) or {}).get("hist")
+        if y0 is None or not isinstance(hist, list) or len(hist) < 3:
+            return
+        try:
+            vals = [float(v) for _ts, v in hist]
+        except (TypeError, ValueError):
+            return
+        x1, x2 = 38, W - 30
+        # 贴着最后一行文字下方画，避免和文字叠在一起；空间不够就不画
+        box = self.c.bbox(items["line2"]) if "line2" in items else None
+        ytop = (box[3] + 3) if box else (y0 + 64)
+        ybot = min(y0 + VOLC_H - 6, ytop + 11)
+        if ybot - ytop < 6:
+            return
+        lo, hi = min(vals), max(vals)
+        span = (hi - lo) or 1.0
+        pts = []
+        for i, v in enumerate(vals):
+            pts.append(x1 + (x2 - x1) * i / (len(vals) - 1))
+            pts.append(ybot - (ybot - ytop) * (v - lo) / span)
+        self.cv.line(*pts, fill=brand, width=max(1, int(round(self.scale))),
+                     tags=("acc", f"spark_{pid}"))
+
+    def _notify(self, title, text):
+        """弹一条系统通知；失败就安静放弃，不影响卡片。"""
+        try:
+            if self._balloon is None:
+                self._balloon = Balloon()
+                self._balloon.attach(self.root.winfo_id())
+            self._balloon.notify(title, text)
+        except Exception:
+            pass
+
+    def _check_low_notify(self, pid, name, items):
+        """余额从正常跌到阈值以下时提醒一次（回到正常后可再次提醒）。"""
+        low = bool(self._warn_flags.get(pid))
+        if pid not in self._low_seen:
+            self._low_seen[pid] = low      # 启动时就已预警的状态只记录，不打扰
+            return
+        if (low and not self._low_seen[pid]
+                and self.cfg.get("notify_low_balance", True)):
+            bal = self.c.itemcget(items["bal"], "text") or "余额不足"
+            self._notify(f"{APP_NAME} · 余额不足",
+                         f"{name} 当前 {bal}，已低于预警阈值")
+        self._low_seen[pid] = low
+
     def _build_status(self):
         """左上角状态行：状态点 + 更新时间 + 操作提示/按钮说明（与右上角工具条同排）。"""
         cv, t = self.cv, self.t
@@ -2147,8 +2412,9 @@ class Widget:
                 tags=("foot", "status_dot"))
         cv.text(38, cy - 7, "", size=8.5, color=t["text3"], anchor="nw",
                 tags=("foot", "foot_updated"))
-        cv.text(194, cy - 7, self._hint_text(), size=8.5, color=t["text3"],
-                anchor="ne", tags=("foot", "foot_hint"))
+        cv.text(194, cy - 7, self._foot_text(), size=8.5,
+                color=self._foot_color(), anchor="ne",
+                tags=("foot", "foot_hint"))
 
     def _pointer_inside(self):
         try:
@@ -2324,8 +2590,8 @@ class Widget:
             tip = next(s[2] for s in self.BTN_SPECS if s[0] == tag)
             self.c.itemconfig("foot_hint", text=tip, fill=self.t["text"])
         else:
-            self.c.itemconfig("foot_hint", text=self._hint_text(),
-                              fill=self.t["text3"])
+            self.c.itemconfig("foot_hint", text=self._foot_text(),
+                              fill=self._foot_color())
         self._set_cursor("hand2" if entering else "")
 
     # ---------------- 全局热键 ----------------
@@ -2364,6 +2630,7 @@ class Widget:
                             activebackground="#5B8DEF", activeforeground="white",
                             font=(UI_FONT, 9), bd=0)
         self.menu.add_command(label="立即刷新", command=self._manual_refresh)
+        self.menu.add_command(label="检查更新", command=self._manual_update_check)
         self.menu.add_command(label="设置…（添加账户 / 充值）",
                               command=self._open_settings)
         self.menu.add_command(label=self._pin_label(), command=self._toggle_pin)
@@ -2388,6 +2655,11 @@ class Widget:
         self.c.bind("<B1-Motion>", self._on_drag)
         self.c.bind("<ButtonRelease-1>", self._on_release)
         self.c.bind("<Button-3>", self._show_menu)
+        self.c.tag_bind("foot_hint", "<Button-1>", self._on_foot_click)
+        self.c.tag_bind("foot_hint", "<Enter>",
+                        lambda e: self._set_cursor("hand2"))
+        self.c.tag_bind("foot_hint", "<Leave>",
+                        lambda e: self._set_cursor(""))
         self.c.bind("<Motion>", self._on_motion)
         self.c.bind("<MouseWheel>", self._on_wheel)
         self.c.bind("<Control-MouseWheel>", self._on_ctrl_wheel)
@@ -2748,8 +3020,10 @@ class Widget:
                         d["delta"] = (None if old is None or new_main is None
                                       else round(new_main - old, 4))
                         if new_main is not None:
-                            self.bal_cache[pid] = {"main": new_main,
-                                                   "ts": time.time()}
+                            entry = self.bal_cache.setdefault(pid, {})
+                            entry["main"] = new_main
+                            entry["ts"] = time.time()
+                            self._push_history(pid, new_main)
                             save_balance_cache(self.bal_cache)
                         d["balance"], d["err_b"] = payload, None
                     elif sub == "usage":
@@ -2760,6 +3034,17 @@ class Widget:
                     elif sub == "error_u":
                         d["err_u"] = payload
                         d.pop("usage", None)
+                elif kind == "update":
+                    tag, url = msg[1], msg[2]
+                    if tag and version_tuple(tag) > version_tuple(APP_VERSION):
+                        self.update_info = (tag, url)
+                    else:
+                        self.update_info = None
+                        if self._manual_check:
+                            self._flash_foot(f"已是最新版本 v{APP_VERSION}")
+                    self._manual_check = False
+                    self.c.itemconfig("foot_hint", text=self._foot_text(),
+                                      fill=self._foot_color())
                 elif kind == "updated_at":
                     self.updated_at = msg[1]
                 elif kind == "hotkey":
@@ -2806,6 +3091,7 @@ class Widget:
 
     def _set_warn(self, pid, low):
         self.c.itemconfig(f"warn_{pid}", state="normal" if low else "hidden")
+        self._warn_flags[pid] = bool(low)
 
     # ---------------- 渲染 ----------------
     def _render_dynamic(self):
@@ -2865,6 +3151,11 @@ class Widget:
             else:
                 self._render_money(pid, items, d, threshold, t, p)
             self._fit_line1_beside_chg(items)
+            brand = t.get(PLATFORMS.get(p.get("type"), {}).get("brand", "ds"),
+                          t["ds"])
+            self._draw_spark(pid, items, brand)
+            self._check_low_notify(pid, p.get("name")
+                                   or platform_label(p.get("type")), items)
 
         self.c.itemconfig("foot_updated", text=f"更新于 {self.updated_at}")
 
@@ -3085,6 +3376,11 @@ class Widget:
             self.cfg["window_x"] = self.root.winfo_x()
             self.cfg["window_y"] = self.root.winfo_y()
             save_config(self.cfg)
+        except Exception:
+            pass
+        try:
+            if self._balloon:
+                self._balloon.close()
         except Exception:
             pass
         self.root.destroy()
