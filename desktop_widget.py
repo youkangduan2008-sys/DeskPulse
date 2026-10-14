@@ -44,7 +44,7 @@ except Exception:
     winreg = None
 
 APP_NAME = "DeskPulse 桌面看板"
-APP_VERSION = "2.0.4"
+APP_VERSION = "2.0.5"
 
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
