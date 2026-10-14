@@ -28,5 +28,7 @@
   "hotkey_settings": "ctrl+alt+s",
   "hotkey_quit": "ctrl+alt+q",
   "show_seconds": false,
-  "autostart": false
+  "autostart": false,
+  "check_update": true,
+  "notify_low_balance": true
 }
