@@ -45,7 +45,7 @@ except Exception:
     winreg = None
 
 APP_NAME = "DeskPulse 桌面看板"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -133,10 +133,10 @@ DS_TOPUP_URL = "https://platform.deepseek.com/top_up"
 DS_KEYS_URL = "https://platform.deepseek.com/api_keys"
 VOLC_TOPUP_URL = "https://console.volcengine.com/finance/fund/recharge/"
 VOLC_AK_URL = "https://console.volcengine.com/iam/keymanage/"
-SF_TOPUP_URL = "https://cloud.siliconflow.cn/i/h5/expenses"
-SF_KEYS_URL = "https://cloud.siliconflow.cn/i/account/ak"
-MS_TOPUP_URL = "https://platform.moonshot.cn/console/pay"
-MS_KEYS_URL = "https://platform.moonshot.cn/console/api-keys"
+SF_TOPUP_URL = "https://cloud.siliconflow.cn/account/charge"
+SF_KEYS_URL = "https://cloud.siliconflow.cn/account/ak"
+MS_TOPUP_URL = "https://platform.kimi.com/console/pay"
+MS_KEYS_URL = "https://platform.kimi.com/console/api-keys"
 ZP_TOPUP_URL = "https://www.bigmodel.cn/finance/overview"
 ZP_KEYS_URL = "https://www.bigmodel.cn/usercenter/proj-mgmt/apikeys"
 
@@ -938,6 +938,13 @@ def fetch_zhipu(api_key):
         headers={"Authorization": api_key, "Accept": "application/json"})
     limits = (data.get("data") or {}).get("limits") or []
     if not limits:
+        # 智谱鉴权失败时也返回 HTTP 200，错误在 JSON 里
+        code = data.get("code")
+        msg = str(data.get("msg") or "").strip()
+        if code not in (None, 0, 200, "0", "200"):
+            extra = ("（智谱 Key 形如 ID.密钥 两段，检查是否整段复制）"
+                     if str(code) == "1000" else "")
+            raise RuntimeError(f"平台返回：{msg or code}{extra}")
         raise RuntimeError(f"返回异常: {json.dumps(data, ensure_ascii=False)[:120]}")
     tok = next((l for l in limits if l.get("type") == "TOKENS_LIMIT"),
                limits[0])
@@ -1290,6 +1297,60 @@ def fetch_weather(city):
         "tmax": (daily.get("temperature_2m_max") or [None])[0],
         "tmin": (daily.get("temperature_2m_min") or [None])[0],
         "pop": (daily.get("precipitation_probability_max") or [None])[0]}
+
+
+# ----------------------------------------------------------------------------
+# 取 Key / 充值的入口文案（2026-10 校准）
+#   keys_path / topup_path：登录后点哪几步——平台改版也能照着找到，是主指引
+#   key_tip：这个平台最容易复制错的地方
+# 说明：DeepSeek / 智谱 / OpenRouter 的控制台是单页应用，任意路径都返回同一个
+#      页面外壳，程序无法判定深链接是否有效，因此以「文字路径」为主、直达按钮为辅。
+# ----------------------------------------------------------------------------
+PLATFORM_GUIDE = {
+    "deepseek": {
+        "keys_path": "登录 platform.deepseek.com → 左侧「API keys」→ 创建 API key",
+        "topup_path": "同一控制台左侧「充值 / Top up」",
+        "key_tip": "创建后弹窗里的整串（sk- 开头）只显示一次，要整段复制；"
+                   "列表里的「名称」和 ID 都不是 Key。",
+    },
+    "volc": {
+        "keys_path": "控制台 → 访问控制 → API 访问密钥 → 创建 Access Key",
+        "topup_path": "控制台 → 费用中心 → 充值",
+        "key_tip": "要填两个值：Access Key ID（AKLT 开头）+ Secret Access Key"
+                   "（只在创建时显示一次）。ark- 开头的是推理 Key，查不了余额。",
+    },
+    "siliconflow": {
+        "keys_path": "登录 cloud.siliconflow.cn → 账户 → API 密钥",
+        "topup_path": "账户 → 费用 / 充值",
+        "key_tip": "sk- 开头整串，别只复制列表里的「名称」。",
+    },
+    "moonshot": {
+        "keys_path": "登录 platform.kimi.com → API Key 管理 → 新建",
+        "topup_path": "控制台 → 账户 → 充值",
+        "key_tip": "注意别复制成「Key ID」那一列；旧域名 platform.moonshot.cn "
+                   "会自动跳到 kimi.com。",
+    },
+    "zhipu": {
+        "keys_path": "登录 bigmodel.cn → 个人中心 → API Keys / 项目管理",
+        "topup_path": "个人中心 → 财务 / 充值",
+        "key_tip": "智谱的 Key 是「ID.密钥」两段式，中间有一个点号，必须整段复制；"
+                   "只复制点号前面那半截是最常见的错误（接口会报「身份验证失败」）。",
+    },
+    "openrouter": {
+        "keys_path": "登录 openrouter.ai → Settings → Keys → Create Key",
+        "topup_path": "Settings → Credits（充值后额度即到账）",
+        "key_tip": "sk-or-v1- 开头整串；创建后只显示一次。",
+    },
+    "workbuddy": {
+        "keys_path": "无需 Key，登录桌面端即可自动读取积分",
+        "topup_path": "在客户端内完成签到 / 充值",
+        "key_tip": "桌面端 5.6.0 起本地凭据已加密，本工具不破解，会如实提示不支持。",
+    },
+}
+
+for _ptype, _g in PLATFORM_GUIDE.items():
+    if _ptype in PLATFORMS:
+        PLATFORMS[_ptype].update(_g)
 
 
 # ----------------------------------------------------------------------------
@@ -1741,6 +1802,40 @@ class AccountDialog(tk.Toplevel):
             link.bind("<Button-1>",
                       lambda e: open_url_async(self.plat["keys_url"]))
         row[0] += 1
+        if not initial and self.plat.get("keys_path"):
+            tk.Label(self, text=f"取 Key 路径：{self.plat['keys_path']}",
+                     bg=BG, fg="#8FA0BF", font=(UI_FONT, 8), wraplength=420,
+                     justify="left", anchor="w").grid(
+                row=row[0], column=0, columnspan=2, sticky="w", padx=16,
+                pady=(0, 2))
+            row[0] += 1
+        if not initial and self.plat.get("key_tip"):
+            tk.Label(self, text="常见坑：" + self.plat["key_tip"],
+                     bg=BG, fg="#C8A96A", font=(UI_FONT, 8), wraplength=420,
+                     justify="left", anchor="w").grid(
+                row=row[0], column=0, columnspan=2, sticky="w", padx=16,
+                pady=(0, 2))
+            row[0] += 1
+        if not initial:
+            tk.Label(self,
+                     text="建议：单独为 DeskPulse 建一把新 Key，不要复用你在别处用的那把"
+                          "——将来想停用时只删这一把，其他工具不受影响。",
+                     bg=BG, fg="#6B7488", font=(UI_FONT, 8), wraplength=420,
+                     justify="left", anchor="w").grid(
+                row=row[0], column=0, columnspan=2, sticky="w", padx=16,
+                pady=(0, 2))
+            row[0] += 1
+        links = tk.Frame(self, bg=BG)
+        links.grid(row=row[0], column=0, columnspan=2, sticky="w", padx=16,
+                   pady=(2, 0))
+        row[0] += 1
+        for _text, _url in (("打开取 Key 页面", self.plat.get("keys_url")),
+                            ("打开充值页面", self.plat.get("topup_url"))):
+            if _url:
+                _lb = tk.Label(links, text="· " + _text, bg=BG, fg="#5B8DEF",
+                               font=(UI_FONT, 8), cursor="hand2")
+                _lb.pack(side="left", padx=(0, 14))
+                _lb.bind("<Button-1>", lambda e, u=_url: open_url_async(u))
         self.e_threshold = field("余额预警阈值(元，0=不提醒)")
         self.e_threshold.insert(0, str((initial or {}).get("threshold", 0)))
 
@@ -2789,6 +2884,17 @@ class Widget:
         self.menu.add_command(label="检查更新", command=self._manual_update_check)
         self.menu.add_command(label="设置…（添加账户 / 充值）",
                               command=self._open_settings)
+        paid = [p for p in self.cfg.get("profiles", [])
+                if PLATFORMS.get(p.get("type"), {}).get("topup_url")]
+        if paid:
+            sub = tk.Menu(self.menu, tearoff=0, bg="#1E2230", fg="#EDF0F6",
+                          activebackground="#5B8DEF",
+                          activeforeground="white", font=(UI_FONT, 9), bd=0)
+            for p in paid:
+                url = PLATFORMS[p["type"]]["topup_url"]
+                sub.add_command(label=p.get("name") or platform_label(p["type"]),
+                                command=lambda u=url: open_url_async(u))
+            self.menu.add_cascade(label="去充值…", menu=sub)
         self.menu.add_command(label=self._pin_label(), command=self._toggle_pin)
         self.menu.add_separator()
         self.menu.add_command(label="放大界面（Ctrl+滚轮上）", command=self._zoom_in)

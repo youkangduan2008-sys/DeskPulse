@@ -83,7 +83,28 @@ pyinstaller --noconsole --onefile --icon app.ico --name DeskPulse desktop_widget
 | OpenRouter | API Key（`sk-or-` 开头） | 剩余额度、累计充值、已用（美元） |
 | WorkBuddy 积分 | 无需密钥 | 积分余额、连续签到天数（读取本机桌面端登录态） |
 
-各平台密钥获取地址、完整操作说明见 [docs/使用说明.md](docs/使用说明.md)。
+### 去哪取 Key / 充值
+
+程序里每个账户都有「打开取 Key 页面」和「打开充值页面」两个直达链接；下面这些是登录后的**文字路径**（平台改版后照着也能找到，比深链接更耐改）：
+
+| 平台 | 取 Key 路径 | 充值路径 |
+|---|---|---|
+| DeepSeek | 左侧「API keys」→ 创建 | 左侧「充值」 |
+| 火山方舟 | 访问控制 → API 访问密钥 → 创建 | 费用中心 → 充值 |
+| 硅基流动 | 账户 → API 密钥 | 账户 → 费用 |
+| Kimi | API Key 管理 → 新建 | 控制台 → 账户 |
+| 智谱 GLM | 个人中心 → API Keys | 个人中心 → 财务 |
+| OpenRouter | Settings → Keys | Settings → Credits |
+
+**最容易复制错的几处**
+
+- **智谱 GLM**：Key 是 `ID.密钥` 两段式，中间有一个点号，**必须整段复制**；只复制点号前面那半截是最常见的错误（接口会回「身份验证失败」）。
+- **火山方舟**：要填**两个**值——Access Key ID（`AKLT` 开头）+ Secret Access Key（只在创建时显示一次）。`ark-` 开头的是推理 Key，**查不了余额**。
+- 其余平台：别把列表里的「名称 / Key ID」那一列当成 Key，Key 只在创建时显示一次。
+
+> **建议为 DeskPulse 单独建一把新 Key**，不要复用你在别处用的那把——将来想停用时只删这一把，其他工具不受影响。这只是建议，不建也能用。
+
+各平台完整操作说明见 [docs/使用说明.md](docs/使用说明.md)。
 
 ## 已知限制
 
