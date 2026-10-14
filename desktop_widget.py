@@ -37,7 +37,7 @@ import ctypes.wintypes
 import traceback
 import webbrowser
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, filedialog
 
 try:
     import winreg
@@ -45,7 +45,7 @@ except Exception:
     winreg = None
 
 APP_NAME = "DeskPulse 桌面看板"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -1874,6 +1874,305 @@ def draw_weather_icon(cv, cx, cy, kind, t, k=1.0):
 # ----------------------------------------------------------------------------
 # 添加 / 编辑账户对话框
 # ----------------------------------------------------------------------------
+# 建议在平台侧给 Key 起的名字（ASCII，任何平台的名称栏都吃得下）
+PLATFORM_KEY_NAME = {
+    "deepseek": "DeepSeek", "volc": "Volc", "siliconflow": "SiliconFlow",
+    "moonshot": "Kimi", "zhipu": "Zhipu", "openrouter": "OpenRouter",
+}
+
+
+def suggest_key_name(ptype):
+    """建议的 Key 名称，例如 DeskPulse-DeepSeek-202610。
+
+    带上工具名和年月，以后在平台后台一眼就能认出这是给谁的；
+    要停用或吊销时也不会误删别处正在用的那把。
+    """
+    short = PLATFORM_KEY_NAME.get(ptype)
+    if not short:
+        short = re.sub(r"[^A-Za-z0-9]+", "", str(ptype or "")) or "AI"
+    return f"DeskPulse-{short}-{now_cst().strftime('%Y%m')}"
+
+
+def fmt_hist_time(ts):
+    try:
+        return dt.datetime.fromtimestamp(float(ts), CST).strftime("%m-%d %H:%M")
+    except Exception:
+        return "--"
+
+
+def history_stats(series):
+    """一组 (时间, 余额) 的统计：当前 / 区间 / 变化 / 近 24 小时消耗速率。"""
+    if not series:
+        return {}
+    vals = [v for _t, v in series]
+    t0, t1 = series[0][0], series[-1][0]
+    st = {"n": len(series), "cur": vals[-1], "hi": max(vals), "lo": min(vals),
+          "delta": vals[-1] - vals[0], "t0": t0, "t1": t1}
+    recent = [(t, v) for t, v in series if t >= t1 - 86400]
+    if len(recent) >= 2 and recent[0][1] > recent[-1][1]:
+        hours = max(0.5, (recent[-1][0] - recent[0][0]) / 3600)
+        rate = (recent[0][1] - recent[-1][1]) / hours
+        st["per_day"] = rate * 24
+        st["days_left"] = (vals[-1] / rate) / 24 if rate > 0 else None
+    return st
+
+
+def history_svg(series, title="", width=900, height=460):
+    """把余额曲线画成 SVG（纯文本，不依赖任何绘图库）。"""
+    pad_l, pad_r, pad_t, pad_b = 96, 28, 34, 46
+    vals = [v for _t, v in series]
+    lo, hi = min(vals), max(vals)
+    if hi - lo < 1e-9:
+        hi, lo = hi + 1.0, lo - 1.0
+    n = len(series)
+    pw = width - pad_l - pad_r
+    ph = height - pad_t - pad_b
+    pts = []
+    for i, (_t, v) in enumerate(series):
+        x = pad_l + pw * (i / (n - 1) if n > 1 else 0.5)
+        y = pad_t + ph * (1 - (v - lo) / (hi - lo))
+        pts.append((x, y))
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
+           f'height="{height}" viewBox="0 0 {width} {height}">',
+           f'<rect width="{width}" height="{height}" fill="#171B26"/>']
+    if title:
+        out.append(f'<text x="{pad_l}" y="24" fill="#EDF0F6" '
+                   f'font-family="Microsoft YaHei" font-size="16">{title}</text>')
+    for i in range(5):
+        y = pad_t + ph * i / 4
+        v = hi - (hi - lo) * i / 4
+        out.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{width - pad_r}" '
+                   f'y2="{y:.1f}" stroke="#232838" stroke-width="1"/>')
+        out.append(f'<text x="{pad_l - 10}" y="{y + 4:.1f}" fill="#6B7488" '
+                   f'font-family="Microsoft YaHei" font-size="12" '
+                   f'text-anchor="end">{fmt_money(v)}</text>')
+    line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    out.append(f'<polyline points="{line}" fill="none" stroke="#5B8DEF" '
+               f'stroke-width="2.5"/>')
+    lx, ly = pts[-1]
+    out.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="4" fill="#5B8DEF"/>')
+    out.append(f'<text x="{lx - 8:.1f}" y="{ly - 12:.1f}" fill="#EDF0F6" '
+               f'font-family="Microsoft YaHei" font-size="13" '
+               f'text-anchor="end">{fmt_money(vals[-1])}</text>')
+    out.append(f'<text x="{pad_l}" y="{height - 16}" fill="#6B7488" '
+               f'font-family="Microsoft YaHei" font-size="12">{fmt_hist_time(series[0][0])}</text>')
+    out.append(f'<text x="{width - pad_r}" y="{height - 16}" fill="#6B7488" '
+               f'font-family="Microsoft YaHei" font-size="12" '
+               f'text-anchor="end">{fmt_hist_time(series[-1][0])}</text>')
+    out.append("</svg>")
+    return "\n".join(out)
+
+
+class HistoryWindow(tk.Toplevel):
+    """余额历史：点开才看，看完可关；可导出矢量图 / 表格 / 报告。
+
+    曲线只在需要时打开这个窗口看，不占用卡片版面。
+    """
+
+    def __init__(self, parent, cfg, cache, on_close=None):
+        super().__init__(parent)
+        setup_ttk_style()
+        self.cfg, self.cache = cfg, cache
+        self.BG = "#1E2230"
+        self.configure(bg=self.BG)
+        self.title("DeskPulse · 余额历史")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.pids = [p for p in cfg.get("profiles", []) if self._hist(p.get("id"))]
+        self.cur = self.pids[0]["id"] if self.pids else None
+
+        head = tk.Frame(self, bg=self.BG)
+        head.pack(fill="x", padx=16, pady=(14, 4))
+        tk.Label(head, text="余额历史", bg=self.BG, fg="#EDF0F6",
+                 font=(UI_FONT, 11, "bold")).pack(side="left")
+        if self.pids:
+            names = [p.get("name") or platform_label(p.get("type"))
+                     for p in self.pids]
+            self.sel = FlatSelect(head, tk.StringVar(value=self.cur),
+                                  [p["id"] for p in self.pids], names,
+                                  width=168, height=26, bg=self.BG)
+            self.sel.pack(side="right")
+            self.sel.var.trace_add("write", lambda *a: self._redraw())
+        self.cv = tk.Canvas(self, width=520, height=232, bg="#171B26",
+                            highlightthickness=0, bd=0)
+        self.cv.pack(padx=16, pady=(6, 6))
+        self.stat = tk.Label(self, text="", bg=self.BG, fg="#9AA3B8",
+                             font=(UI_FONT, 9), justify="left", anchor="w",
+                             wraplength=510)
+        self.stat.pack(fill="x", padx=16)
+        btns = tk.Frame(self, bg=self.BG)
+        btns.pack(pady=12)
+        for text, cmd, kind in (("导出矢量图", self._export_svg, "secondary"),
+                                ("导出表格", self._export_csv, "secondary"),
+                                ("导出报告", self._export_html, "accent"),
+                                ("关闭", self._close, "primary")):
+            FlatButton(btns, text, cmd, kind=kind, width=100, height=31,
+                       size=9, bg=self.BG).pack(side="left", padx=5)
+        self._redraw()
+        self.update_idletasks()
+        try:
+            clamp_window_pos(self, parent.winfo_rootx() + 60,
+                             parent.winfo_rooty() + 40)
+            keep_on_screen(self)
+        except Exception:
+            pass
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+    # ---------- 数据 ----------
+    def _hist(self, pid):
+        h = (self.cache.get(pid) or {}).get("hist")
+        if not isinstance(h, list):
+            return []
+        out = []
+        for item in h:
+            try:
+                out.append((float(item[0]), float(item[1])))
+            except (TypeError, ValueError, IndexError):
+                continue
+        return out
+
+    def _series(self):
+        return self._hist(self.cur) if self.cur else []
+
+    def _cur_name(self):
+        for p in self.pids:
+            if p["id"] == self.cur:
+                return p.get("name") or platform_label(p.get("type"))
+        return ""
+
+    def _close(self):
+        try:
+            if self.on_close_cb if False else None:
+                pass
+        except Exception:
+            pass
+        self.destroy()
+
+    # ---------- 绘制 ----------
+    def _redraw(self):
+        cv = self.cv
+        cv.delete("all")
+        s = self._series()
+        if len(s) < 2:
+            cv.create_text(260, 116, text="数据点还不够（至少需要两次刷新）",
+                           fill="#6B7488", font=(UI_FONT, 10))
+            self.stat.config(text="程序每次刷新余额时会记一个点，多跑一会儿再回来看。")
+            return
+        w, h = 520, 232
+        pl, pr, pt, pb = 62, 18, 14, 28
+        vals = [v for _t, v in s]
+        lo, hi = min(vals), max(vals)
+        if hi - lo < 1e-9:
+            hi, lo = hi + 1.0, lo - 1.0
+        n = len(s)
+        pts = []
+        for i, (_t, v) in enumerate(s):
+            x = pl + (w - pl - pr) * (i / (n - 1) if n > 1 else 0.5)
+            y = pt + (h - pt - pb) * (1 - (v - lo) / (hi - lo))
+            pts.append((x, y))
+        for i in range(5):
+            y = pt + (h - pt - pb) * i / 4
+            v = hi - (hi - lo) * i / 4
+            cv.create_line(pl, y, w - pr, y, fill="#232838")
+            cv.create_text(pl - 8, y, text=fmt_money(v), anchor="e",
+                           fill="#6B7488", font=(UI_FONT, 8))
+        cv.create_line(*[c for p in pts for c in p], fill="#5B8DEF", width=2)
+        x, y = pts[-1]
+        cv.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#5B8DEF", outline="")
+        cv.create_text(x - 8, y - 14, text=fmt_money(s[-1][1]), anchor="e",
+                       fill="#EDF0F6", font=(UI_FONT, 9))
+        cv.create_text(pl, h - 12, text=fmt_hist_time(s[0][0]), anchor="w",
+                       fill="#6B7488", font=(UI_FONT, 8))
+        cv.create_text(w - pr, h - 12, text=fmt_hist_time(s[-1][0]), anchor="e",
+                       fill="#6B7488", font=(UI_FONT, 8))
+        st = history_stats(s)
+        parts = [f"当前 {fmt_money(st['cur'])}",
+                 f"区间 {fmt_money(st['lo'])} ~ {fmt_money(st['hi'])}",
+                 f"{st['n']} 个点"]
+        if st.get("per_day"):
+            parts.append(f"近 24 小时约 {fmt_money(st['per_day'])}/天")
+        if st.get("days_left"):
+            parts.append(f"按此速度还能用 {st['days_left']:.1f} 天")
+        self.stat.config(text=" ｜ ".join(parts))
+
+    # ---------- 导出 ----------
+    def _ask(self, ext, desc):
+        if not self.cur:
+            messagebox.showinfo("提示", "还没有历史数据", parent=self)
+            return None
+        today = now_cst().strftime("%Y%m%d")
+        safe = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", self._cur_name())[:24]
+        return filedialog.asksaveasfilename(
+            parent=self, defaultextension=ext, filetypes=[(desc, "*" + ext)],
+            initialfile=f"DeskPulse-余额历史-{safe}-{today}{ext}")
+
+    def _export_svg(self):
+        path = self._ask(".svg", "矢量图")
+        if not path:
+            return
+        s = self._series()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(history_svg(s, f"{self._cur_name()} 余额历史"))
+            messagebox.showinfo("导出完成", f"已保存：\n{path}", parent=self)
+        except Exception as e:
+            messagebox.showwarning("导出失败", str(e)[:200], parent=self)
+
+    def _export_csv(self):
+        path = self._ask(".csv", "表格")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                f.write("账户,时间,余额\n")
+                for t, v in self._series():
+                    f.write(f"{self._cur_name()},{fmt_hist_time(t)},{v:.4f}\n")
+            messagebox.showinfo("导出完成", f"已保存：\n{path}", parent=self)
+        except Exception as e:
+            messagebox.showwarning("导出失败", str(e)[:200], parent=self)
+
+    def _export_html(self):
+        path = self._ask(".html", "报告")
+        if not path:
+            return
+        s = self._series()
+        st = history_stats(s)
+        rows = "".join(f"<tr><td>{fmt_hist_time(t)}</td><td>{v:.4f}</td></tr>"
+                       for t, v in reversed(s))
+        html = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>DeskPulse 余额历史 · {self._cur_name()}</title>
+<style>
+body{{background:#12151d;color:#EDF0F6;font-family:"Microsoft YaHei",sans-serif;
+     margin:0;padding:28px}}
+h1{{font-size:20px;font-weight:600;margin:0 0 4px}}
+.sub{{color:#9AA3B8;font-size:13px;margin-bottom:18px}}
+.card{{background:#1E2230;border-radius:12px;padding:16px;margin-bottom:16px}}
+table{{border-collapse:collapse;font-size:13px;width:100%}}
+td,th{{padding:6px 10px;border-bottom:1px solid #2A3040;text-align:left}}
+th{{color:#9AA3B8;font-weight:500}}
+.kv{{display:inline-block;margin-right:22px;color:#9AA3B8;font-size:13px}}
+.kv b{{color:#EDF0F6;font-weight:600}}
+</style></head><body>
+<h1>{self._cur_name()} · 余额历史</h1>
+<div class="sub">导出时间 {now_cst().strftime('%Y-%m-%d %H:%M')} · 数据来自 DeskPulse 本地记录</div>
+<div class="card">{history_svg(s, '')}</div>
+<div class="card">
+  <span class="kv">当前余额 <b>{fmt_money(st.get('cur', 0))}</b></span>
+  <span class="kv">区间最低 <b>{fmt_money(st.get('lo', 0))}</b></span>
+  <span class="kv">区间最高 <b>{fmt_money(st.get('hi', 0))}</b></span>
+  <span class="kv">数据点 <b>{st.get('n', 0)}</b></span>
+  {f"<span class='kv'>近 24 小时 <b>{fmt_money(st.get('per_day', 0))}/天</b></span>" if st.get('per_day') else ""}
+</div>
+<div class="card"><table><tr><th>时间</th><th>余额</th></tr>{rows}</table></div>
+</body></html>"""
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+            messagebox.showinfo("导出完成", f"已保存：\n{path}", parent=self)
+        except Exception as e:
+            messagebox.showwarning("导出失败", str(e)[:200], parent=self)
+
+
 class AccountDialog(tk.Toplevel):
     def __init__(self, parent, ptype, on_save, initial=None, default_name=None):
         super().__init__(parent)
@@ -1963,9 +2262,34 @@ class AccountDialog(tk.Toplevel):
                 pady=(0, 2))
             row[0] += 1
         if not initial:
+            kname = suggest_key_name(ptype)
+            knf = tk.Frame(self, bg=BG)
+            knf.grid(row=row[0], column=0, columnspan=2, sticky="w",
+                     padx=16, pady=(0, 2))
+            row[0] += 1
+            tk.Label(knf, text="建 Key 时的名称建议：", bg=BG, fg="#8FA0BF",
+                     font=(UI_FONT, 8)).pack(side="left")
+            tk.Label(knf, text=kname, bg="#2A3040", fg="#EDF0F6",
+                     font=(UI_FONT, 8), padx=7, pady=2).pack(side="left",
+                                                              padx=(2, 6))
+            copied = tk.Label(knf, text="", bg=BG, fg="#7FD8A6",
+                              font=(UI_FONT, 8))
+
+            def _copy_name(name=kname, tip=copied, holder=knf):
+                try:
+                    holder.clipboard_clear()
+                    holder.clipboard_append(name)
+                    tip.config(text="已复制，粘到平台的名称栏即可")
+                except Exception:
+                    tip.config(text="复制失败，请手动选中复制")
+
+            FlatButton(knf, "复制", _copy_name, kind="accent", width=52,
+                       height=24, size=8, bg=BG).pack(side="left")
+            copied.pack(side="left", padx=6)
+        if not initial:
             tk.Label(self,
-                     text="建议：单独为 DeskPulse 建一把新 Key，不要复用你在别处用的那把"
-                          "——将来想停用时只删这一把，其他工具不受影响。",
+                     text="建议：单独为 DeskPulse 建一把新 Key，不要复用你在别处用的那把，"
+                          "并按上面的名字命名——将来想停用时只删这一把，其他工具不受影响。",
                      bg=BG, fg="#6B7488", font=(UI_FONT, 8), wraplength=420,
                      justify="left", anchor="w").grid(
                 row=row[0], column=0, columnspan=2, sticky="w", padx=16,
@@ -2068,13 +2392,15 @@ class AccountDialog(tk.Toplevel):
 # 设置对话框（账户的添加、编辑、删除、充值入口均在此）
 # ----------------------------------------------------------------------------
 class SettingsDialog(tk.Toplevel):
-    def __init__(self, parent, cfg, on_save, on_profiles=None):
+    def __init__(self, parent, cfg, on_save, on_profiles=None,
+                 on_history=None):
         super().__init__(parent)
         self.title(f"DeskPulse 设置 · v{APP_VERSION}")
         setup_ttk_style()
         self.cfg = cfg
         self.on_save = on_save
         self.on_profiles = on_profiles  # 账户增删改即时生效回调
+        self.on_history = on_history    # 「余额历史…」按钮回调
         self.resizable(False, False)
         self.transient(parent)
         self.configure(bg="#1E2230")
@@ -2205,6 +2531,11 @@ class SettingsDialog(tk.Toplevel):
                    kind="accent", width=112, height=27, size=8,
                    bg=BG).grid(row=env_row, column=0, padx=3, pady=(6, 2),
                                sticky="w")
+        if self.on_history:
+            FlatButton(addrow, "余额历史 / 趋势…", self.on_history,
+                       kind="secondary", width=112, height=27, size=8,
+                       bg=BG).grid(row=env_row, column=1, padx=3, pady=(6, 2),
+                                   sticky="w")
         self._env_status = tk.Label(addrow, text="", bg=BG, fg="#6B7488",
                                     font=(UI_FONT, 8), anchor="w")
         self._env_status.grid(row=env_row + 1, column=0, columnspan=4,
@@ -2388,15 +2719,15 @@ WEATHER_BOTTOM = 152
 CLOCK_TOP = 56
 CLOCK_BOTTOM = 152
 BOTTOM_PAD = 14
-ACC_H_SM, VOLC_H, ACC_GAP = 62, 90, 12
+ACC_H_SM, VOLC_H, ACC_GAP = 62, 78, 12
 ACC_PAD = 14
 EMPTY_H = 44
 SCREEN_MARGIN = 16
 
 
 def acc_block_height(p):
-    # 所有平台账户卡统一高度（四行结构：名称/余额行 + 明细行 + 预警行 + 趋势曲线），
-    # 比 2.0.x 高 12px，专门留给底部那条余额迷你曲线
+    # 所有平台账户卡统一高度（三行结构：名称/余额 + 明细 + 预警），视觉对齐
+    # 余额曲线不再画在卡片上，改为「余额历史…」窗口里按需查看
     return VOLC_H
 
 
@@ -2706,6 +3037,23 @@ class Widget:
         self.root.after(ms, lambda: self.c.itemconfig(
             "foot_hint", text=self._foot_text(), fill=self._foot_color()))
 
+    def _open_history(self):
+        """打开余额历史窗口（点开才看，看完关掉就行）。"""
+        win = getattr(self, "_history_win", None)
+        try:
+            if win is not None and win.winfo_exists():
+                win.deiconify()
+                win.lift()
+                win.focus_force()
+                return
+        except Exception:
+            pass
+        try:
+            self._history_win = HistoryWindow(self.root, self.cfg,
+                                              self.bal_cache)
+        except Exception as e:
+            log_exception(f"打开余额历史失败: {e}")
+
     def _manual_update_check(self):
         self._manual_check = True
         self.c.itemconfig("foot_hint", text="正在检查更新…",
@@ -2736,33 +3084,6 @@ class Widget:
         else:
             hist.append([round(now, 1), round(v, 4)])
         ent["hist"] = hist[-200:]
-
-    def _draw_spark(self, pid, items, brand):
-        """卡片底部一条余额迷你曲线；点数少于 3 个时不画。"""
-        self.c.delete(f"spark_{pid}")
-        y0 = items.get("y0")
-        hist = (self.bal_cache.get(pid) or {}).get("hist")
-        if y0 is None or not isinstance(hist, list) or len(hist) < 3:
-            return
-        try:
-            vals = [float(v) for _ts, v in hist]
-        except (TypeError, ValueError):
-            return
-        x1, x2 = 38, W - 30
-        # 贴着最后一行文字下方画，避免和文字叠在一起；空间不够就不画
-        box = self.c.bbox(items["line2"]) if "line2" in items else None
-        ytop = (box[3] + 3) if box else (y0 + 64)
-        ybot = min(y0 + VOLC_H - 6, ytop + 11)
-        if ybot - ytop < 6:
-            return
-        lo, hi = min(vals), max(vals)
-        span = (hi - lo) or 1.0
-        pts = []
-        for i, v in enumerate(vals):
-            pts.append(x1 + (x2 - x1) * i / (len(vals) - 1))
-            pts.append(ybot - (ybot - ytop) * (v - lo) / span)
-        self.cv.line(*pts, fill=brand, width=max(1, int(round(self.scale))),
-                     tags=("acc", f"spark_{pid}"))
 
     def _notify(self, title, text):
         """弹一条系统通知；失败就安静放弃，不影响卡片。"""
@@ -3014,6 +3335,7 @@ class Widget:
                             font=(UI_FONT, 9), bd=0)
         self.menu.add_command(label="立即刷新", command=self._manual_refresh)
         self.menu.add_command(label="检查更新", command=self._manual_update_check)
+        self.menu.add_command(label="余额历史…", command=self._open_history)
         self.menu.add_command(label="设置…（添加账户 / 充值）",
                               command=self._open_settings)
         paid = [p for p in self.cfg.get("profiles", [])
@@ -3348,7 +3670,8 @@ class Widget:
         try:
             self._settings_dlg = SettingsDialog(
                 self.root, self.cfg, self._apply_settings,
-                on_profiles=self._apply_profiles_live)
+                on_profiles=self._apply_profiles_live,
+                on_history=self._open_history)
         except Exception as e:
             log_exception(f"打开设置窗口失败: {e}")
 
@@ -3545,9 +3868,6 @@ class Widget:
             else:
                 self._render_money(pid, items, d, threshold, t, p)
             self._fit_line1_beside_chg(items)
-            brand = t.get(PLATFORMS.get(p.get("type"), {}).get("brand", "ds"),
-                          t["ds"])
-            self._draw_spark(pid, items, brand)
             self._check_low_notify(pid, p.get("name")
                                    or platform_label(p.get("type")), items)
 
