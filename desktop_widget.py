@@ -2222,7 +2222,7 @@ class Widget:
         # 分段分隔线（画在高亮之上，保持等分感）
         for i in range(1, 4):
             dx = x0 + pad + seg_w * i
-            cv.line(dx, y0 + pad + 8, dx, y0 + pad + seg_h - 8,
+            cv.line(dx, y0 + pad + 6, dx, y0 + pad + seg_h - 6,
                     fill=t["stroke"], width=1, tags=("btngroup",))
         for tag, _label, _tip, _flag in self.BTN_SPECS:
             cx, cy = self._btn_center(tag)
@@ -2249,54 +2249,62 @@ class Widget:
             "btn_close": self._icon_close,
         }[tag](cx, cy, col)
 
+    def _icon_stroke(self):
+        """图标统一线宽：与卡片文字重量匹配，缩放时按比例取整。"""
+        return max(1, int(round(1.9 * self.scale)))
+
     def _icon_refresh(self, cx, cy, col):
-        """顺时针回转箭头：2px 圆弧 + 实心箭头，26px 下仍清晰。"""
-        cv = self.cv
-        w = max(2, int(1.9 * self.scale))
-        cv.arc(cx - 7, cy - 7, cx + 7, cy + 7, start=55, extent=275, style="arc",
+        """顺时针回转箭头：描边圆弧 + 折线箭头。
+
+        旧版用实心三角 + 2px 圆弧，缩到 15px 视觉尺寸后糊成一坨；
+        改为全描边后与卡片其余细线元素一致。
+        """
+        cv, w = self.cv, self._icon_stroke()
+        cv.arc(cx - 6, cy - 6, cx + 6, cy + 6, start=62, extent=288, style="arc",
                outline=col, width=w, tags=("btn_refresh",))
-        cv.polygon([cx + 8.5, cy - 7.5, cx + 1.5, cy - 7.5, cx + 6, cy - 2.5],
-                   fill=col, outline="", tags=("btn_refresh",))
+        cv.line(cx + 2.0, cy - 6.6, cx + 6.4, cy - 5.4, fill=col, width=w,
+                capstyle="round", tags=("btn_refresh",))
+        cv.line(cx + 6.4, cy - 5.4, cx + 4.4, cy - 1.6, fill=col, width=w,
+                capstyle="round", tags=("btn_refresh",))
 
     def _icon_lock(self, cx, cy, col):
-        """锁：锁体圆角矩形 + 锁梁；解锁态锁梁右移开口。"""
-        cv = self.cv
+        """锁：锁体只画轮廓（旧版实心块太重），锁梁按锁定/解锁两种开口。"""
+        cv, w = self.cv, self._icon_stroke()
         locked = bool(self.cfg.get("locked"))
-        w = max(2, int(1.9 * self.scale))
-        cv.round_rect(cx - 6, cy - 1, cx + 6, cy + 10, 2.5, fill=col, outline="",
-                      tags=("btn_lock",))
+        cv.round_rect(cx - 5.5, cy - 0.5, cx + 5.5, cy + 8.5, 2.5, fill="",
+                      outline=col, width=w, tags=("btn_lock",))
         if locked:
-            cv.arc(cx - 5.5, cy - 12, cx + 5.5, cy + 2, start=0, extent=180,
+            cv.arc(cx - 4.5, cy - 10, cx + 4.5, cy + 1, start=0, extent=180,
                    style="arc", outline=col, width=w, tags=("btn_lock",))
-            cv.line(cx - 5.5, cy - 5, cx - 5.5, cy + 1, fill=col, width=w,
+            cv.line(cx - 4.5, cy - 4.5, cx - 4.5, cy + 1, fill=col, width=w,
                     tags=("btn_lock",))
-            cv.line(cx + 5.5, cy - 5, cx + 5.5, cy + 1, fill=col, width=w,
+            cv.line(cx + 4.5, cy - 4.5, cx + 4.5, cy + 1, fill=col, width=w,
                     tags=("btn_lock",))
         else:
             # 开口锁：锁梁只画左半并向外张开
-            cv.arc(cx - 10.5, cy - 12, cx + 0.5, cy + 2, start=310, extent=160,
+            cv.arc(cx - 9.0, cy - 10, cx + 0.0, cy + 1, start=310, extent=160,
                    style="arc", outline=col, width=w, tags=("btn_lock",))
-            cv.line(cx - 9.5, cy - 5.5, cx - 9.5, cy + 1, fill=col, width=w,
+            cv.line(cx - 8.2, cy - 4.6, cx - 8.2, cy + 1, fill=col, width=w,
                     tags=("btn_lock",))
 
     def _icon_pin(self, cx, cy, col):
-        """图钉：顶横杆 + 梯形钉帽 + 钉针，负空间清楚。"""
-        cv = self.cv
-        w = max(2, int(1.9 * self.scale))
-        cv.line(cx - 6.5, cy - 7.5, cx + 6.5, cy - 7.5, fill=col, width=w,
+        """图钉：顶横杆 + 描边钉帽 + 钉针（钉帽由实心改为描边，减轻重量）。"""
+        cv, w = self.cv, self._icon_stroke()
+        cv.line(cx - 6, cy - 7, cx + 6, cy - 7, fill=col, width=w,
                 capstyle="round", tags=("btn_pin",))
-        cv.polygon([cx - 4, cy - 5.5, cx + 4, cy - 5.5, cx + 2, cy + 1.5,
-                    cx - 2, cy + 1.5], fill=col, outline="", tags=("btn_pin",))
-        cv.line(cx, cy + 1.5, cx, cy + 9.5, fill=col, width=w,
+        cv.polygon([cx - 3.6, cy - 5.2, cx + 3.6, cy - 5.2, cx + 1.7, cy + 1.0,
+                    cx - 1.7, cy + 1.0], fill="", outline=col, width=w,
+                   tags=("btn_pin",))
+        cv.line(cx, cy + 1.0, cx, cy + 8.6, fill=col, width=w,
                 capstyle="round", tags=("btn_pin",))
 
     def _icon_close(self, cx, cy, col):
-        cv = self.cv
-        w = max(2, int(1.8 * self.scale))
-        cv.line(cx - 6, cy - 6, cx + 6, cy + 6, fill=col, width=w,
+        cv, w = self.cv, self._icon_stroke()
+        cv.line(cx - 5.5, cy - 5.5, cx + 5.5, cy + 5.5, fill=col, width=w,
                 capstyle="round", tags=("btn_close",))
-        cv.line(cx + 6, cy - 6, cx - 6, cy + 6, fill=col, width=w,
+        cv.line(cx + 5.5, cy - 5.5, cx - 5.5, cy + 5.5, fill=col, width=w,
                 capstyle="round", tags=("btn_close",))
+
 
     def _button_hover(self, tag, entering):
         """悬停：重绘按钮簇，并在左上角状态行右侧显示该按钮的功能名。"""
