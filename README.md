@@ -39,8 +39,9 @@ pyinstaller --noconsole --onefile --icon app.ico --name DeskPulse desktop_widget
 
 ## 界面
 
-<!-- 截图占位：如你截了图，把图片放到 docs/screenshot.png 并打开下面这行 -->
-<!-- ![DeskPulse 界面](docs/screenshot.png) -->
+![DeskPulse 界面](docs/screenshot.png)
+
+*界面示意：图中账户、余额与天气均为**演示数据**，用于展示布局。*
 
 卡片布局：左侧为大时钟与日期农历，右侧为天气；下方每个账户一张卡片，左缘品牌色竖条、右上大余额数字，右侧显示较上次变化。
 
