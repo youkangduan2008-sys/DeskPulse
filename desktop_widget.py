@@ -24,6 +24,7 @@ import re
 import time
 import hmac
 import uuid
+import base64
 import hashlib
 import datetime as dt
 import threading
@@ -44,7 +45,7 @@ except Exception:
     winreg = None
 
 APP_NAME = "DeskPulse 桌面看板"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -566,6 +567,113 @@ def lunar_line(d):
 # ----------------------------------------------------------------------------
 # 配置
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# 密钥来源：环境变量兜底 + Windows DPAPI 加密存储
+# ----------------------------------------------------------------------------
+SECRET_FIELDS = ("api_key", "ak", "sk")
+ENC_PREFIX = "enc:"
+
+# 平台密钥对应的环境变量名（按顺序取第一个非空的）
+ENV_KEY_MAP = {
+    "deepseek": {"api_key": ("DEEPSEEK_API_KEY", "DEEPSEEK_KEY")},
+    "volc": {"ak": ("VOLC_ACCESS_KEY_ID",),
+             "sk": ("VOLC_SECRET_ACCESS_KEY",)},
+    "siliconflow": {"api_key": ("SILICONFLOW_API_KEY",)},
+    "moonshot": {"api_key": ("MOONSHOT_API_KEY", "KIMI_API_KEY")},
+    "zhipu": {"api_key": ("ZHIPU_API_KEY", "ZHIPUAI_API_KEY")},
+    "openrouter": {"api_key": ("OPENROUTER_API_KEY",)},
+}
+
+
+def env_key_for(ptype, field):
+    """取该平台该字段对应的环境变量值；没有就返回空串。"""
+    names = ENV_KEY_MAP.get(ptype or "", {}).get(field) or ()
+    for name in names:
+        val = (os.environ.get(name) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def apply_env_keys(cfg):
+    """给「还没填密钥」的账户补上环境变量里的值，返回补了哪些字段。
+
+    只补空字段，绝不覆盖用户在界面里填过的值。
+    """
+    filled = []
+    for p in (cfg.get("profiles") or []):
+        for field in SECRET_FIELDS:
+            if (p.get(field) or "").strip():
+                continue
+            val = env_key_for(p.get("type"), field)
+            if val:
+                p[field] = val
+                filled.append((p.get("id"), field))
+    return filled
+
+
+class DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _blob_in(data):
+    buf = ctypes.create_string_buffer(data, len(data))
+    return DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+
+
+def dpapi_crypt(data, protect):
+    """调用 Windows DPAPI（当前用户级）。失败返回 None。"""
+    try:
+        blob_in = _blob_in(data)
+        blob_out = DATA_BLOB()
+        fn = (ctypes.windll.crypt32.CryptProtectData if protect
+              else ctypes.windll.crypt32.CryptUnprotectData)
+        if not fn(ctypes.byref(blob_in), None, None, None, None, 0,
+                  ctypes.byref(blob_out)):
+            return None
+        try:
+            return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        finally:
+            ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+    except Exception:
+        return None
+
+
+def encrypt_secret(value):
+    """把明文密钥加密成 enc:xxx；加密不可用时原样返回（保证功能不挂）。"""
+    if not value or not isinstance(value, str) or value.startswith(ENC_PREFIX):
+        return value
+    enc = dpapi_crypt(value.encode("utf-8"), True)
+    if not enc:
+        return value
+    return ENC_PREFIX + base64.b64encode(enc).decode("ascii")
+
+
+def decrypt_secret(value):
+    """把 enc:xxx 还原成明文；不是密文就原样返回。"""
+    if not isinstance(value, str) or not value.startswith(ENC_PREFIX):
+        return value
+    try:
+        raw = base64.b64decode(value[len(ENC_PREFIX):])
+    except Exception:
+        return ""
+    out = dpapi_crypt(raw, False)
+    return out.decode("utf-8", "replace") if out is not None else ""
+
+
+def decrypt_config_secrets(cfg):
+    """读取配置时把密钥字段解密（同时兼容 v1.x 的顶层旧字段）。"""
+    for p in (cfg.get("profiles") or []):
+        for field in SECRET_FIELDS:
+            if field in p:
+                p[field] = decrypt_secret(p.get(field))
+    for old in ("deepseek_api_key", "volc_access_key_id",
+                "volc_secret_access_key"):
+        if old in cfg:
+            cfg[old] = decrypt_secret(cfg.get(old))
+
+
 def load_config():
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     try:
@@ -576,7 +684,9 @@ def load_config():
                 cfg.update(user_cfg)
     except Exception as e:
         log_exception(f"读取配置失败: {e}")
+    decrypt_config_secrets(cfg)
     migrate_config(cfg)
+    apply_env_keys(cfg)          # 界面里没填的密钥，用环境变量兜底
     return cfg
 
 
@@ -604,8 +714,18 @@ def migrate_config(cfg):
 
 def save_config(cfg):
     try:
+        out = json.loads(json.dumps(cfg))
+        for p in (out.get("profiles") or []):
+            for field in SECRET_FIELDS:
+                cur = p.get(field)
+                # 值来自环境变量就写空，避免把环境变量里的密钥落到磁盘上
+                if (isinstance(cur, str) and cur
+                        and cur == env_key_for(p.get("type"), field)):
+                    p[field] = ""
+                else:
+                    p[field] = encrypt_secret(cur)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+            json.dump(out, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
         log_exception(f"保存配置失败: {e}")
@@ -1589,6 +1709,14 @@ class AccountDialog(tk.Toplevel):
         self.entries = {}
         for key, label, secret in self.plat["fields"]:
             self.entries[key] = field(label, secret=secret)
+        # 新增账户时若环境变量里有对应密钥，直接预填，省一次手输
+        env_prefilled = []
+        if not initial:
+            for key, _label, _secret in self.plat["fields"]:
+                val = env_key_for(ptype, key)
+                if val:
+                    self.entries[key].insert(0, val)
+                    env_prefilled.append(key)
         if ptype == "volc":
             bad_initial = initial and (
                 _secret_problem(initial.get("ak", ""), "AK")
@@ -1597,8 +1725,12 @@ class AccountDialog(tk.Toplevel):
                 hint = "当前密钥有误（含中文或为ark-开头），请重新填写"
             elif initial:
                 hint = "留空表示不修改原密钥"
+            elif env_prefilled:
+                hint = "已从环境变量预填，直接保存即可"
             else:
                 hint = self.plat["hint"]
+        elif env_prefilled:
+            hint = "已从环境变量预填，直接保存即可"
         else:
             hint = "留空表示不修改原 Key" if initial else self.plat["hint"]
         link = tk.Label(self, text=hint, bg=BG, fg="#6B7488",
@@ -1845,6 +1977,17 @@ class SettingsDialog(tk.Toplevel):
                       activebackground="#3D4663", cursor="hand2").grid(
                 row=i // 4, column=i % 4, padx=2, pady=1, sticky="w")
 
+        env_row = len(PLATFORMS) // 4 + 1
+        tk.Button(addrow, text="⤓ 从环境变量导入", width=13,
+                  command=self._import_env, bg="#2E4A63", fg="#BFE0FF",
+                  relief="flat", font=(UI_FONT, 8),
+                  activebackground="#3A5C7C", cursor="hand2").grid(
+            row=env_row, column=0, padx=2, pady=(4, 1), sticky="w")
+        self._env_status = tk.Label(addrow, text="", bg=BG, fg="#6B7488",
+                                    font=(UI_FONT, 8), anchor="w")
+        self._env_status.grid(row=env_row + 1, column=0, columnspan=4,
+                              sticky="w", padx=2)
+
         btns = tk.Frame(self, bg=BG)
         btns.pack(pady=10)
         tk.Button(btns, text="保存", width=10, command=self._save,
@@ -1862,6 +2005,19 @@ class SettingsDialog(tk.Toplevel):
         keep_on_screen(self)
         reclamp_later(self, _px, _py)
         safe_grab(self)
+
+    def _import_env(self):
+        """把环境变量里的密钥补进还没填的账户，并给出结果提示。"""
+        filled = apply_env_keys({"profiles": self.profiles})
+        self._rebuild_acct_rows()
+        if filled:
+            self._env_status.config(
+                text=f"已从环境变量导入 {len(filled)} 项密钥，记得点保存",
+                fg="#7FD8A6")
+        else:
+            self._env_status.config(
+                text="没有可导入的项（环境变量里没有，或账户都已填写）",
+                fg="#6B7488")
 
     def _suggest_name(self, ptype):
         n = sum(1 for p in self.profiles if p["type"] == ptype) + 1
