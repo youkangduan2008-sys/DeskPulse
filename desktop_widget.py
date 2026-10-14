@@ -2856,6 +2856,7 @@ class Widget:
                 self._render_zhipu(pid, items, d, threshold, t)
             else:
                 self._render_money(pid, items, d, threshold, t, p)
+            self._fit_line1_beside_chg(items)
 
         self.c.itemconfig("foot_updated", text=f"更新于 {self.updated_at}")
 
@@ -2871,6 +2872,42 @@ class Widget:
         col = t["ok"] if delta > 0 else t["err"]
         self.c.itemconfig(items["chg"], text=f"较上次 {sign}{unit}{abs(delta):.2f}",
                           fill=col)
+
+    def _fit_line1_beside_chg(self, items):
+        """line1 过长会撞上右侧的「较上次」标签：超宽就截断加省略号，不再重叠。
+
+        用 canvas bbox 实测像素宽度，因此在 85%~160% 缩放下同样准确。
+        """
+        item, chg = items.get("line1"), items.get("chg")
+        if item is None or chg is None:
+            return
+        if not self.c.itemcget(chg, "text"):
+            return
+        txt = self.c.itemcget(item, "text")
+        if not txt:
+            return
+        cb, lb = self.c.bbox(chg), self.c.bbox(item)
+        if not cb or not lb:
+            return
+        limit = cb[0] - 8
+        if lb[2] <= limit:
+            return
+        # 先在自然断点（（ 或 ·）处收尾，避免截出「↓…」这种半截内容
+        for sep in ("（", " · "):
+            k = txt.find(sep)
+            if k > 0:
+                self.c.itemconfig(item, text=txt[:k].rstrip())
+                b = self.c.bbox(item)
+                if b and b[2] <= limit:
+                    return
+        self.c.itemconfig(item, text=txt)
+        s = txt
+        while s:
+            s = s[:-1]
+            self.c.itemconfig(item, text=(s + "…") if s else "")
+            b = self.c.bbox(item)
+            if not b or b[2] <= limit:
+                return
 
     def _render_money(self, pid, items, d, threshold, t, p):
         """DeepSeek / 硅基流动 / Kimi / WorkBuddy积分 等「余额型」平台统一渲染。"""
